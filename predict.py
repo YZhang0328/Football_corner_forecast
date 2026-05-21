@@ -28,7 +28,7 @@ def main() -> None:
     print(f"Predicting  {len(holdout_rows) // 2:,} holdout matches")
 
     # Labelled rows update Kalman states. Holdout rows have missing corners, so
-    # they receive pre-match states but cannot update the filter.
+    # they receive pre-match states.
     kalman_input_rows = pd.concat([labelled_rows, holdout_rows], ignore_index=True)
     kalman_rows = build_kalman_features(
         kalman_input_rows,
@@ -57,6 +57,7 @@ def main() -> None:
         make_cold_start_prior_model(),
     )
 
+    # Final Poisson model: predicts expected corners from base features plus filled KF attack.
     corner_model = make_corner_model()
     corner_model.fit(
         known_attack_train_rows[FINAL_MODEL_FEATURES],

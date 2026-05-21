@@ -13,6 +13,9 @@ from sklearn.metrics import mean_absolute_error, mean_poisson_deviance, mean_squ
 from sklearn.pipeline import Pipeline
 
 
+PROJECT_DIR = Path(__file__).resolve().parent
+INPUT_DIR = PROJECT_DIR / "inputs"
+
 CORE_SEASONS = list(range(2012, 2018))
 TUNE_SEASONS = [2018, 2019]
 TRAIN_SEASONS = list(range(2012, 2020))
@@ -26,19 +29,22 @@ POISSON_ALPHA = 0.1
 
 def _resolve_data_dir(data_dir: Path | str | None = None) -> Path:
     """Use either the project root or the actual inputs directory."""
-    root = Path(data_dir) if data_dir is not None else Path.cwd() / "inputs"
+    root = Path(data_dir).resolve() if data_dir is not None else INPUT_DIR
     if (root / "match_data.csv").exists():
         return root
     if (root / "inputs" / "match_data.csv").exists():
         return root / "inputs"
-    return root
+    raise FileNotFoundError(
+        "Could not find match_data.csv. Pass the project root or inputs/ "
+        f"to load_data(). Checked: {root} and {root / 'inputs'}."
+    )
 
 
 def load_data(data_dir: Path | str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Load labelled training rows and unlabelled holdout feature rows.
 
-    By default this reads from ``inputs/``. Passing the project root still works
-    so older notebook cells remain easy to rerun.
+    By default this reads from the repository's ``inputs/`` folder, not from the
+    current notebook or terminal working directory.
     """
     root = _resolve_data_dir(data_dir)
     labelled_rows = pd.read_csv(root / "match_data.csv", parse_dates=["date"])
@@ -50,10 +56,11 @@ def load_data(data_dir: Path | str | None = None) -> tuple[pd.DataFrame, pd.Data
 
 
 def composite_loss(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """Conservative model-selection loss used on TUNE only.
+    """Model loss used on TUNE only.
 
     Corners are counts, so Poisson deviance gets the largest weight. MAE and
-    RMSE keep the selected model useful as a point forecast too.
+    RMSE keep the selected model useful as a point forecast too. MAE measures
+    the mean deviation. RMSE penalises large errors.
     """
     positive_pred = np.clip(y_pred, 1e-6, None)
     return (
