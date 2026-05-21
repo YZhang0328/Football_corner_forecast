@@ -14,7 +14,7 @@ from utility_functions import (
 )
 
 
-PROJECT_DIR = Path.cwd()
+PROJECT_DIR = Path(__file__).resolve().parent
 INPUT_DIR = PROJECT_DIR / "inputs"
 OUTPUT_DIR = PROJECT_DIR / "outputs"
 

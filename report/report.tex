@@ -33,7 +33,7 @@
 }
 
 \title{Football Corner Forecasting Report}
-\author{Yujia Zhang, \hfill 21 May 2026}
+\author{Yujia Zhang \hfill 21 May 2026}
 \date{}
 
 \begin{document}
@@ -73,8 +73,7 @@ from using very large coefficients, which helps avoid overfitting.
 \hat{y} \sim \texttt{PoissonRegressor}(\alpha=0.1).
 \]
 
-The value \(\alpha=0.1\) is the L2 penalty strength, selected on the tune seasons not on the validation seasons. Thus there's no data leakage.
-small:
+The value \(\alpha=0.1\) is the L2 penalty strength, selected on the tune seasons not on the validation seasons. The objective it minimises is:
 \[
 \text{Poisson count loss} + 0.1 \times \text{coefficient penalty}.
 \]
@@ -93,9 +92,10 @@ extra punishment to large misses.
 
 The final table compares three models. The baseline is the provided reference
 prediction. The second row adds the Kalman attack-strength feature but fills
-missing values with a simple mean. The third row is the final model: it uses a
-tree-model fitted cold-start prior value instead of a mean fill when the sufficient team history is missing.
-Lower is better for all three metrics.
+missing values with a simple mean. The third row is the final model: when team
+history is insufficient, it uses a small tree model to estimate the missing
+attack-strength value instead of using one global mean. Lower is better for all
+three metrics.
 
 \begin{table}[h]
 \centering
@@ -110,6 +110,49 @@ Poisson + cold-start Kalman attack prior & 2.1588 & 2.7196 & 1.2437 \\
 \end{tabular}
 \end{table}
 
+\section{Reproducing the Results}
+
+\subsection{Dependencies}
+
+The code requires Python 3.10 or later with the following packages:
+
+\begin{verbatim}
+numpy pandas scikit-learn
+\end{verbatim}
+
+The code also uses the standard library modules \texttt{collections},
+\texttt{dataclasses}, and \texttt{pathlib}, which are included with Python.
+
+
+\subsection{Generating holdout predictions}
+
+Data exploration is in \texttt{data\_exploration.ipynb}.
+The full modelling workflow---Kalman filter design, hyperparameter search,
+ablation grid, cold-start prior comparison, and one-shot validation---is
+documented in
+\texttt{Kalman\_filter\_based\_team\_strength.ipynb}.
+The final prediction pipeline is in \texttt{predict.py}; run the following command from the project root:
+
+\begin{verbatim}
+python predict.py
+\end{verbatim}
+
+The script trains the final Poisson model on all labelled seasons (2012--2022),
+applies the Kalman filter and cold-start prior to both the training and holdout
+rows, and writes the output file.
+
+\subsection{Output file}
+
+The predictions are written to:
+
+\begin{verbatim}
+outputs/predictions.csv
+\end{verbatim}
+
+The file contains one row per (match, team). Its columns are:
+\begin{verbatim}
+match_id, team, predicted_corners
+\end{verbatim}
 
 \section{Train-tune-validation Periods}
 
@@ -302,19 +345,20 @@ remaining signals introduces complexity without a robust improvement.
 \subsection{Why the problem is significant}
 
 The Kalman filter requires a warm-up period before its estimates are reliable.
-A team's \texttt{kf\_attack} value is only recorded once \emph{both} that team
-and its opponent have each completed at least 5 matches. On the training set
-this affects 185 matches (370 rows, 8.9\,\% of training data) and is tolerable.
-On the holdout set the problem is more serious.
+A pre-match attacking-strength estimate is only recorded once \emph{both} the
+team and its opponent have each completed at least 5 earlier matches. This is
+intentional: without enough history, the Kalman state is mostly just its prior
+mean rather than learned team information.
 
-Four of the 28 holdout teams---\texttt{team\_30}, \texttt{team\_34},
-\texttt{team\_36}, and \texttt{team\_47}---never appear in training at all,
-so they carry zero Kalman history into the holdout period.
-Because the warm-up condition requires \emph{both} teams in a match to have
-enough history, every match involving a new team produces two missing rows:
-one for the new team and one for its opponent.
-In total, \textbf{360 of the 1{,}520 holdout rows (23.7\,\%) have no
-\texttt{kf\_attack} value.}
+The issue matters in this dataset. In the labelled history used for the final
+training run, 185 matches (370 team rows, 8.9\,\% of labelled rows) do not yet
+have a usable Kalman attack estimate. The holdout set has a larger cold-start
+problem. Four of the 28 holdout teams, \texttt{team\_30}, \texttt{team\_34},
+\texttt{team\_36}, and \texttt{team\_47}, never appear in the labelled data at
+all, covering 190 holdout team rows. Because the filter requires both teams in
+a match to have enough history, these new teams also affect their opponents'
+rows. In total, \textbf{360 of the 1{,}520 holdout rows (23.7\,\%) have no
+usable pre-match attack estimate before filling.}
 
 \subsection{Why a global mean is not enough}
 
@@ -327,34 +371,30 @@ attacking strengths; collapsing them to one number discards that signal.
 
 \subsection{What the prior model does}
 
-The prior is a supervised model for the \emph{missing} Kalman attack feature,
-not a corner-count model. It is fitted only on training rows where the Kalman
-filter has already produced a real pre-match attacking-strength estimate, and
-it learns the mapping
+The prior is not a second corner-count model. It only estimates the missing
+Kalman attack-strength value. It is trained on historical rows where the
+Kalman filter has already produced a real pre-match attack estimate, using the
+available row-level information:
 \[
-(\texttt{feature\_1},\ldots,\texttt{feature\_10},\;\texttt{home})
+(\text{10 anonymised match features},\;\text{home indicator})
 \;\longrightarrow\;
-\texttt{kf\_attack}.
+\text{Kalman attack-strength estimate}.
 \]
-At inference time it fills only the rows where the Kalman attack estimate is
-missing. Rows with genuine Kalman history keep their original value untouched;
-the prior is purely a fallback for cold-start rows. The final Poisson model
-receives the same set of features for every row: the 10 anonymised match
-features, the home indicator, and the attacking-strength estimate---drawn from
-real Kalman history where available, and from the prior otherwise. This
-preserves the historical Kalman signal wherever it exists, while giving
-cold-start rows a feature-conditioned initial estimate rather than a single
-league-average number.
+At prediction time, rows with real Kalman history keep their original attack
+estimate untouched. Only missing values are filled by the prior. The final
+Poisson model then sees the same kind of input for every row: the 10 anonymised
+features, the home indicator, and one attack-strength estimate. That estimate
+comes from real Kalman history where possible, and from the prior only when
+history is missing.
 
 \subsection{Conservative clipping}
 
 After the prior produces an initial attack value, that value is clipped to the
-5th--95th percentile of the observed \texttt{kf\_attack} distribution from
-training rows with real Kalman history. This prevents the prior from assigning
-implausibly large or small values for feature combinations it has not seen.
-The prior can still distinguish stronger from weaker cold-start rows within
-that range; it simply cannot extrapolate to an extreme initial strength
-unsupported by any historical Kalman state.
+5th--95th percentile of real Kalman attack estimates observed in training.
+This prevents the prior from assigning implausibly large or small values for
+feature combinations it has not seen. The prior can still distinguish stronger
+from weaker cold-start rows within that range; it simply cannot extrapolate to
+an extreme initial strength unsupported by the historical states.
 
 
 \subsection{Model choice and hyperparameters}
@@ -362,8 +402,8 @@ unsupported by any historical Kalman state.
 Ridge regression and \texttt{HistGradientBoostingRegressor} were both tested
 as the prior model on the tune period.
 Ridge assumes a linear relationship between the anonymised features and
-\texttt{kf\_attack}; it also requires the features to be on comparable scales,
-which cannot be verified for anonymous inputs.
+the Kalman attack estimate; it also requires the features to be on comparable
+scales, which cannot be verified for anonymous inputs.
 \texttt{HistGradientBoostingRegressor} (HGB) makes neither assumption: it can
 capture non-linear feature-to-attack relationships and handles mixed-scale
 inputs natively without preprocessing.
@@ -426,10 +466,10 @@ labelled rows concatenated with the holdout rows. Labelled rows update the
 hidden states; holdout rows receive pre-match states but do not update
 anything because their corners are unknown. The Poisson corner model is fitted
 only on labelled rows that have real Kalman history. The cold-start prior is
-then fitted on those same rows and applied to fill missing \texttt{kf\_attack}
+then fitted on those same rows and applied to fill missing attack-strength
 values in the holdout. The prior is therefore used only as a targeted fallback
-for missing team-history features, not as a replacement for either the Kalman
-filter or the final corner model.
+for missing team-history information, not as a replacement for either the
+Kalman filter or the final corner model.
 
 
 \section{Removed Experiments}
@@ -441,33 +481,34 @@ fall into three categories.
 
 \paragraph{Static team target encoding.}
 Each team's historical mean corners scored and conceded were added as extra
-features. These are cruder versions of \texttt{kf\_attack}: the Kalman filter
-already summarises each team's attacking history, updating that estimate match
-by match with uncertainty tracking. The static mean ignores recency and
-carries no uncertainty signal. In ablation it added nothing after
-\texttt{kf\_attack} was already in the model.
+features. These are cruder versions of the Kalman attack-strength feature: the
+filter already summarises each team's attacking history, updating that estimate
+match by match with uncertainty tracking. The static mean ignores recency and
+carries no uncertainty signal. In ablation it added nothing after the Kalman
+attack feature was already in the model.
 
 \paragraph{Rolling form features.}
 Short-window rolling means (last 3, 5, and 10 matches) overlap substantially
-with what \texttt{kf\_attack} already captures. The Kalman filter is itself a
-weighted average of past observations, emphasising recent matches through its
-uncertainty dynamics. Adding rolling means alongside it therefore introduces
-near-duplicate columns. The tune-period ablation showed no consistent gain from
-any rolling window, alone or combined with \texttt{kf\_attack}.
+with what the Kalman attack feature already captures. The Kalman filter is
+itself a weighted average of past observations, emphasising recent matches
+through its uncertainty dynamics. Adding rolling means alongside it therefore
+introduces near-duplicate columns. The tune-period ablation showed no
+consistent gain from any rolling window, alone or combined with the Kalman
+attack feature.
 
 \paragraph{Team, opponent, and season identity features.}
-Team and opponent identities are already encoded through \texttt{kf\_attack}.
-Adding them as categorical dummy variables asks the model to re-learn a static
-per-team offset that the Kalman feature already provides dynamically. Season
-identity produced a scale problem: the raw year values (2012--2022) are an
-order of magnitude larger than the other features, which destabilised the
+Team and opponent identities are already represented through the Kalman attack
+feature. Adding them as categorical dummy variables asks the model to re-learn
+a static per-team offset that the Kalman feature already provides dynamically.
+Season identity produced a scale problem: the raw year values (2012--2022) are
+an order of magnitude larger than the other features, which destabilised the
 Poisson GLM and caused convergence issues even after regularisation.
 
 \paragraph{Frozen home/away drift features.}
 Separate home-only and away-only rolling averages were considered to capture
 venue-specific form. After controlling for the \texttt{home} indicator and
-\texttt{kf\_attack}, the residual home/away drift signal was too small to
-recover reliably in the tune period.
+the Kalman attack feature, the residual home/away drift signal was too small
+to recover reliably in the tune period.
 
 \subsection{Too many parameters for the dataset size}
 
@@ -523,7 +564,7 @@ undetected if the chosen evaluation measure is calibrated to Poisson.
 
 \section{What Next}
 
-Five directions below
+Four directions below
 
 \subsection{Non-linear team-strength response}
 
